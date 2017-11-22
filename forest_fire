@@ -1,0 +1,93 @@
+#!venv/bin/python3
+#
+# Copyright (c) 2017 Vickenty Fesunov
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+import sys
+from docopt import docopt
+from serial import serial_for_url
+from prometheus_client import start_http_server, Gauge
+
+DOC = '''
+Usage:
+    forest_fire [--serial=<path>] [--baud-rate=<n>] [--timeout=<n>] [--http-port=<n>]
+
+Options:
+    --serial=<path>   Path to the serial device [default: /dev/ttyUSB0]
+    --baud-rate=<n>   Baud rate of the serial port [default: 9600]
+    --timeout=<n>     Data timeout for the serial device, seconds [default: 30]
+    --http-port=<n>   Port number to serve metrics from [default: 8081]
+'''
+
+# Parse command-line options
+options = docopt(DOC, sys.argv[1:])
+
+# Open the serial port, "8N1" setup is the default
+print("Opening '%(--serial)s' baud rate %(--baud-rate)s, timeout is %(--timeout)s" % options)
+port = serial_for_url(options['--serial'], baudrate=int(options['--baud-rate']), timeout=float(options['--timeout']))
+
+# Dictionary to keep metrics objects.
+metrics = {}
+
+# Flag indicating if we started the HTTP server yet or not. We start the server
+# only after we get data from the device, and exit if the device stops sending
+# data. This way we avoid feeding stale data to Prometheus.
+server_started = False
+
+# Endless loop
+while True:
+    # Read line from the serial port.
+    line = port.read_until()
+    if not line:
+        # No data, exit.
+        print("No data received, timed out.")
+        break
+    
+    # Decode bytes into a string and strip any whitespace
+    line = line.decode('ascii').strip()
+
+    # Log the received line
+    print("Read: '%s'" % (line,))
+
+    # Start the HTTP server to serve metrics.
+    if not server_started:
+        print("Publishing metrics on port %(--http-port)s" % options)
+        start_http_server(int(options['--http-port']))
+        server_started = True
+
+    # For each comma-separated item in the line
+    for item in line.split(','):
+        # Remove any surrounding whitespace
+        item = item.strip()
+
+        # Split the item into metric name, sensor name and value. Ignore items that have invalid format.
+        try:
+            metric, sensor, value = item.split(':')
+            value = float(value)
+        except ValueError:
+            print("Failed to parse '%s', expected 'metric:sensor:value'" % (item))
+            continue
+
+        # If we did not encounter this metric name before, create new metric object
+        if metric not in metrics:
+            metrics[metric] = Gauge(metric, metric, [ "sensor" ])
+
+        # Publish the value
+        metrics[metric].labels(sensor).set(value)

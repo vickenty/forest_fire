@@ -1,0 +1,11 @@
+[Unit]
+Description="Export metrics from a serial device to Prometheus"
+
+[Service]
+WorkingDirectory=/home/pi/forest_fire
+ExecStart=/home/pi/forest_fire/forest_fire
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
